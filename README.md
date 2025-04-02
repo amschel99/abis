@@ -1,148 +1,127 @@
 
 
-# **Requirements Document: SPHR Token & Uniswap Integration (Berachain/EVM)**
+# **SPHR Token Requirements Document**
 
-## **1. Objectives**
-- Deploy the SPHR (ERC-20) token on Berachain (or Ethereum testnet).
-- Allow **admin-only** functions to add liquidity to SPHR-BERA pools on Uniswap V2.
-- Enable users to swap SPHR ↔ BERA via the pool.
-- Lay groundwork for future cross-chain expansion (Cosmos/MANTRA).
+## **1. Core Features**
+### **A. Transfer Restrictions**
+- The SPHR token **cannot be transferred directly** between users (e.g., via `transfer()` or `transferFrom()`).
+- Transfers are **only allowed**:
+  1. When interacting with Uniswap (e.g., swaps, liquidity provisioning).
+  2. When initiated by the `admin` (e.g., for airdrops, liquidity setup).
+- All other transfers are blocked.
 
----
+### **B. Uniswap Integration**
+- Users can **swap SPHR ↔ BERA** via Uniswap V2/V3.
+- Users can **add/remove liquidity** through Uniswap (but liquidity provisioning can be restricted to admin if desired).
 
-## **2. Technical Scope**
-
-### **A. Token Contract (SPHR.sol)**
-- **ERC-20 Standard** with minting/burning.
-- **Admin Controls**:
-  - Only owner can mint tokens (for airdrops/liquidity).
-  - Optionally renounce ownership after setup.
-- **Initial Supply**: 1,000,000 SPHR (18 decimals).
-- **Code**: Based on OpenZeppelin (see Phase 1 example).
-
-### **B. Liquidity Pool (Uniswap V2)**
-- **Admin-Only Liquidity Provisioning**:
-  - Restrict `addLiquidity` to owner (to prevent rogue LPs).
-  - Use `UniswapV2Router02` to create SPHR-BERA pool.
-- **Steps**:
-  1. Swap 500 USDC → BERA via Uniswap.
-  2. Approve SPHR and BERA for router.
-  3. Call `addLiquidity()` with 400,000 SPHR + equivalent BERA.
-
-### **C. Swap Functionality**
-- Public swaps via Uniswap interface.
-- Users can trade SPHR ↔ BERA once liquidity exists.
-
-### **D. Security**
-- **Testnet First**: Deploy to Berachain Artio (testnet) or Sepolia.
-- **Slippage Control**: Set min amounts in `addLiquidity` (e.g., 1% slippage).
-- **Emergency Withdraw**: Admin can remove liquidity if needed.
+### **C. Admin Controls**
+- **Upgradable Logic**: Admin can modify transfer rules (e.g., allow trading on other DEXs later).
+- **Whitelist Management**: Admin can add/remove addresses exempt from transfer restrictions (e.g., future DEX routers).
 
 ---
 
-## **3. Deliverables**
-1. **Smart Contracts**:
-   - `SPHR.sol` (ERC-20 with minting).
-   - Optional helper contract for admin liquidity management.
-2. **Scripts** (Hardhat/Foundry):
-   - `deploy.js`: Deploy SPHR token.
-   - `addLiquidity.js`: Fund pool (admin-only).
-   - `swap.js`: Test token swaps.
-3. **Test Cases**:
-   - Verify minting restrictions.
-   - Test liquidity addition and swaps.
-4. **Documentation**:
-   - Setup guide for testnet/mainnet deployment.
-   - User instructions for swapping.
+## **2. Technical Implementation**
 
----
-
-## **4. Tools & Libraries**
-- **Development**:
-  - **Hardhat/Foundry** (EVM framework).
-  - **OpenZeppelin** (ERC-20 templates).
-  - **Uniswap V2 Interfaces** (`IUniswapV2Router02`, `IUniswapV2Factory`).
-- **Testing**:
-  - Berachain Artio (testnet) or Sepolia.
-  - Testnet USDC/BERA (use faucets).
-
----
-
-## **5. User Flow**
-1. **Admin**:
-   - Deploys SPHR.
-   - Mints 400,000 SPHR + swaps USDC → BERA.
-   - Calls `addLiquidity()` to create SPHR-BERA pool.
-2. **Users**:
-   - Claim SPHR via airdrop (future phase).
-   - Swap SPHR ↔ BERA on Uniswap.
-
----
-
-## **6. Example Code Snippets**
-
-### **SPHR Token (SPHR.sol)**
+### **A. Modified ERC-20 Contract**
 ```solidity
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
+
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 
-contract SPHR is ERC20, Ownable {
-    constructor() ERC20("SPHERE", "SPHR") {
-        _mint(msg.sender, 1_000_000 * 10**18);
+contract RestrictedSPHR is ERC20, Ownable {
+    address public immutable uniswapRouter;
+    mapping(address => bool) public whitelist;
+
+    constructor(address _uniswapRouter) ERC20("SPHERE", "SPHR") {
+        uniswapRouter = _uniswapRouter;
+        _mint(msg.sender, 1_000_000 * 10**18); // Initial supply to admin
+        whitelist[_uniswapRouter] = true; // Uniswap router is whitelisted
+        whitelist[msg.sender] = true; // Admin is whitelisted
     }
-    function mint(address to, uint256 amount) public onlyOwner {
-        _mint(to, amount);
+
+    // Override transfer functions with restrictions
+    function _transfer(address sender, address recipient, uint256 amount) internal override {
+        require(
+            whitelist[sender] || whitelist[recipient],
+            "SPHR: Transfers restricted to Uniswap/admin"
+        );
+        super._transfer(sender, recipient, amount);
+    }
+
+    // Admin functions
+    function updateWhitelist(address _address, bool _status) external onlyOwner {
+        whitelist[_address] = _status;
     }
 }
 ```
 
-### **Adding Liquidity (addLiquidity.js)**
-```javascript
-const { ethers } = require("hardhat");
-const UNISWAP_ROUTER = "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D"; // Uniswap V2 Router
+### **B. Upgradeability (Optional)**
+Use the **Transparent Proxy Pattern** (OpenZeppelin) to allow the admin to upgrade the contract logic later:
+```solidity
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
 
-async function main() {
-  const [admin] = await ethers.getSigners();
-  const router = await ethers.getContractAt("IUniswapV2Router02", UNISWAP_ROUTER);
+import "@openzeppelin/contracts/proxy/transparent/TransparentUpgradeableProxy.sol";
 
-  // Approve SPHR and BERA for router
-  await sphr.approve(router.address, "400000000000000000000000"); // 400k SPHR
-  await bera.approve(router.address, BERA_AMOUNT);
-
-  // Add liquidity
-  await router.addLiquidity(
-    sphr.address,
-    bera.address,
-    "400000000000000000000000", // 400k SPHR
-    BERA_AMOUNT,
-    0, 0, // min amounts (slippage tolerance)
-    admin.address,
-    Math.floor(Date.now() / 1000) + 300 // deadline
-  );
-}
+// Deploy this proxy contract, pointing to the initial RestrictedSPHR logic.
+// Admin can upgrade to a new contract later.
 ```
 
 ---
 
-## **7. Timeline & Milestones**
-1. **Week 1**: Token deployment + basic swaps (testnet).
-2. **Week 2**: Admin liquidity controls + tests.
-3. **Week 3**: Audit prep + mainnet deployment (if testnet succeeds).
+## **3. Workflow**
+### **A. Admin Setup**
+1. Deploy `RestrictedSPHR` with the Uniswap router address (e.g., `0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D`).
+2. Add liquidity to Uniswap (admin-only):
+   - Approve SPHR and BERA for the router.
+   - Call `addLiquidityETH` or `addLiquidity` via Uniswap.
+
+### **B. User Swaps**
+1. User approves Uniswap router to spend their SPHR.
+2. User swaps via Uniswap interface (transfer allowed because router is whitelisted).
+
+### **C. Upgrading Rules**
+1. Deploy a new version of `RestrictedSPHR` with updated logic.
+2. Admin calls `upgradeTo(newLogicContract)` on the proxy contract.
 
 ---
 
-## **8. Next Steps (Post-This-Phase)**
-- Cross-chain bridge to Cosmos (MANTRA).
-- Airdrop contract (Merkle distributor).
-- Frontend for swaps/claims.
+## **4. Key Checks**
+### **Test Cases**
+1. **Block Regular Transfers**:
+   - User A tries to send SPHR to User B → Reverts.
+2. **Allow Uniswap Swaps**:
+   - User swaps SPHR → BERA via Uniswap → Succeeds.
+3. **Admin Liquidity Provisioning**:
+   - Admin adds liquidity → Succeeds.
+4. **Upgrade Test**:
+   - Deploy new logic allowing direct transfers → Verify upgrade works.
 
 ---
 
-### **Notes for the Developer**
-- Prioritize **testnet validation** before mainnet.
-- Use **OpenZeppelin Audited Contracts** for safety.
-- Document all admin private keys/APIs securely.
+## **5. Security Considerations**
+- **Immutable Router**: The Uniswap router address is set at deployment and cannot be changed (prevents rug-pulls).
+- **Proxy Admin**: Use a multisig or timelock for upgradeability to prevent abuse.
+- **Whitelist Audits**: Ensure only trusted addresses (e.g., Uniswap) are whitelisted.
 
-Let me know if you’d like to adjust the scope or add more features!
+---
+
+## **6. Deliverables**
+1. `RestrictedSPHR.sol` (ERC-20 with transfer restrictions).
+2. Proxy deployment scripts (if using upgradeability).
+3. Test suite (Hardhat/Foundry) covering transfer rules.
+4. Deployment guide for Berachain/Uniswap.
+
+---
+
+## **7. Example User Flow**
+1. **Admin**:
+   - Deploys `RestrictedSPHR` and proxy (if upgradable).
+   - Adds SPHR-BERA liquidity on Uniswap.
+2. **User**:
+   - Buys SPHR via Uniswap (allowed via router whitelist).
+   - Cannot send SPHR to another wallet directly (blocked by contract).
+
+---
