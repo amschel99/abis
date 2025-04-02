@@ -1,6 +1,4 @@
-Here’s a concise **Requirements Document** for your developer to implement the **SPHERE (SPHR) token on Berachain/Uniswap**, focusing on admin-controlled liquidity provisioning and swaps. This aligns with Phase 1 (EVM-only) of your plan.
 
----
 
 # **Requirements Document: SPHR Token & Uniswap Integration (Berachain/EVM)**
 
